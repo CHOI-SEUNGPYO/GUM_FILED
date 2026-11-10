@@ -139,7 +139,7 @@ test('heartbeat releases a controller that no longer replies', async (t) => {
 
 test('PC module: callbacks, sequence gaps, duplicate rejection and slot reuse', async (t) => {
   const f = await fixture(t);
-  const context = vm.createContext({ WebSocket, URL, performance, console,
+  const context = vm.createContext({ WebSocket, URL, performance, console, setTimeout, clearTimeout,
     GameProtocol: require('../Game/protocol.js') });
   vm.runInContext(readFileSync(require.resolve('../Game/network.js'), 'utf8'), context);
   const network = context.GameNetwork, events = new EventEmitter();
@@ -180,7 +180,7 @@ test('PC module: callbacks, sequence gaps, duplicate rejection and slot reuse', 
 
 test('Android packet without seq is relayed unchanged and loss is unknown', async (t) => {
   const f = await fixture(t);
-  const context = vm.createContext({ WebSocket, URL, performance, console,
+  const context = vm.createContext({ WebSocket, URL, performance, console, setTimeout, clearTimeout,
     GameProtocol: require('../Game/protocol.js') });
   vm.runInContext(readFileSync(require.resolve('../Game/network.js'), 'utf8'), context);
   const network = context.GameNetwork, events = new EventEmitter();

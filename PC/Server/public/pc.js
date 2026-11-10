@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const url = new URL('/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 $('server-url').value = url.href;
-const events = [], history = new Map(), rates = new Map();
+const events = [], history = new Map(), rates = new Map(), previousCounts = new Map();
 let roomInfo = null, startedAt = null, lastTick = performance.now();
 function log(text) {
   events.push(`${new Date().toISOString()} ${text}`);
@@ -10,7 +10,7 @@ function log(text) {
   $('events').textContent = events.slice(-12).join('\n');
 }
 function reset() {
-  roomInfo = null; startedAt = null; history.clear(); rates.clear();
+  roomInfo = null; startedAt = null; history.clear(); rates.clear(); previousCounts.clear();
   $('pin').textContent = '—'; $('qr-data').value = ''; $('controller-link').hidden = true;
   $('start').disabled = true; $('players').replaceChildren();
 }
@@ -27,7 +27,7 @@ $('room-form').onsubmit = async (event) => {
         log(`방 생성 ${m.room_pin} (${m.transport})`);
       },
       onPlayerState(id, state) {
-        if (state === 'joined') { history.delete(id); rates.delete(id); }
+        if (state === 'joined') { history.delete(id); rates.delete(id); previousCounts.delete(id); }
         if (state === 'disconnected' && history.has(id)) history.get(id).state = state;
         log(`${id}: ${state}`); render();
       },
@@ -61,12 +61,15 @@ function render() {
 }
 setInterval(() => {
   const now = performance.now(), seconds = (now - lastTick) / 1000; lastTick = now;
+  for (const id of rates.keys()) rates.set(id, 0);
   for (const s of GameNetwork.getStats()) {
-    const old = history.get(s.id); rates.set(s.id, (s.count - (old?.count || 0)) / seconds);
+    rates.set(s.id, (s.count - (previousCounts.get(s.id) || 0)) / seconds);
+    previousCounts.set(s.id, s.count);
   }
   render();
 }, 1000);
 $('export').onclick = async () => {
+  render();
   const result = { kind: 'synthetic-controller-test', actualAndroidVerified: false,
     exportedAt: new Date().toISOString(), startedAt, room: roomInfo,
     players: [...history.values()], connections: await GameNetwork.getConnectionStats(), events };

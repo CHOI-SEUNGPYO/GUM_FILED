@@ -1,7 +1,7 @@
 /* Load protocol.js first. No game or rendering dependencies. */
 (function (root) {
   const P = root.GameProtocol;
-  let socket = null, room = null, handlers = {}, generation = 0, pendingReject = null;
+  let socket = null, room = null, handlers = {}, generation = 0, pendingReject = null, roomTimer = null;
   const peers = new Map();
   function emit(name, ...args) {
     try { handlers[name]?.(...args); } catch (error) { console.error(`GameNetwork ${name}:`, error); }
@@ -14,7 +14,11 @@
   function dispose(peer) {
     peer.channel?.close(); peer.pc?.close(); peer.pending.length = 0;
   }
+  function clearRoomTimer() {
+    clearTimeout(roomTimer); roomTimer = null;
+  }
   function close() {
+    clearRoomTimer();
     generation++;
     pendingReject?.(new Error('연결이 닫혔습니다.')); pendingReject = null;
     const oldSocket = socket; socket = null; room = null;
@@ -88,9 +92,15 @@
         const token = generation;
         pendingReject = reject;
         const active = () => token === generation && socket === ws;
+        roomTimer = setTimeout(() => {
+          if (!active()) return;
+          const cause = new Error('서버의 방 생성 응답 시간이 초과되었습니다. 주소와 실행 상태를 확인하세요.');
+          pendingReject = null; reject(cause); close(); error('SERVER_TIMEOUT', cause.message);
+        }, 15000);
         ws.onopen = () => { if (active()) send({ type: 'CREATE_ROOM', client_type: 'PC_HOST' }); };
         ws.onerror = () => {
           if (!active()) return;
+          clearRoomTimer();
           pendingReject?.(new Error('서버에 연결할 수 없습니다.')); pendingReject = null;
           error('SERVER_ERROR', '서버 주소와 실행 상태를 확인하세요.');
         };
@@ -105,6 +115,7 @@
           if (!m) { error('INVALID_MESSAGE', '서버 메시지 형식 오류'); return; }
           try {
             if (m.type === 'ROOM_CREATED') {
+              clearRoomTimer();
               room = m; pendingReject = null; emit('onRoomCreated', m); resolve(m);
             } else if (m.type === 'PLAYER_JOINED') await addPlayer(m.assigned_id, token);
             else if (m.type === 'PLAYER_LEFT') {
@@ -112,7 +123,7 @@
               if (peer) { state(peer, 'disconnected'); peers.delete(peer.id); dispose(peer); }
             } else if (m.type === 'ERROR') {
               error(m.code, m.message);
-              if (!room) { pendingReject?.(new Error(m.message)); pendingReject = null; }
+              if (!room) { clearRoomTimer(); pendingReject?.(new Error(m.message)); pendingReject = null; }
             } else if (m.type === 'SENSOR' || m.type === 'CALIBRATE_CONFIRM') {
               const peer = peers.get(m.sender_id);
               if (room?.transport !== 'relay') throw new Error('직접 연결 모드에 서버 중계 입력이 도착했습니다.');
@@ -138,9 +149,11 @@
     const ready = [...peers.values()].filter((peer) => peer.state === 'ready');
     if (!ready.length) throw new Error('준비된 컨트롤러가 없습니다.');
     if (room.transport === 'relay') send({ type: 'GAME_START' });
-    else for (const peer of ready) {
-      if (peer.channel.readyState !== 'open' || peer.channel.bufferedAmount > 262144) throw new Error(`${peer.id}의 송신 상태를 확인하세요.`);
-      peer.channel.send(JSON.stringify({ type: 'GAME_START' }));
+    else {
+      for (const peer of ready) {
+        if (peer.channel.readyState !== 'open' || peer.channel.bufferedAmount > 262144) throw new Error(`${peer.id}의 송신 상태를 확인하세요.`);
+      }
+      for (const peer of ready) peer.channel.send(JSON.stringify({ type: 'GAME_START' }));
     }
     return ready.length;
   }
@@ -150,9 +163,18 @@
   }
   async function getConnectionStats() {
     const result = [];
-    for (const peer of peers.values()) {
+    const token = generation;
+    for (const peer of [...peers.values()]) {
+      const active = () => token === generation && peers.get(peer.id) === peer;
+      if (!active()) continue;
       if (!peer.pc) { result.push({ id: peer.id, transport: 'relay' }); continue; }
-      const stats = await peer.pc.getStats();
+      let stats;
+      try { stats = await peer.pc.getStats(); }
+      catch (cause) {
+        if (active()) result.push({ id: peer.id, transport: 'p2p', error: cause.message });
+        continue;
+      }
+      if (!active()) continue;
       for (const entry of stats.values()) if (entry.type === 'transport' && entry.selectedCandidatePairId) {
         const pair = stats.get(entry.selectedCandidatePairId);
         if (!pair) continue;
